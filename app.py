@@ -6,40 +6,54 @@ st.set_page_config(page_title="XYZ MIS Tool", page_icon="📈")
 
 st.title("📈 MIS Monthly Variance Analyzer")
 
-# 1. FILE UPLOADER (Must do this first!)
+# 1. FILE UPLOADER
 uploaded_file = st.file_uploader("STEP 1: Upload your Tally Trial Balance (CSV)", type="csv")
 
 if not uploaded_file:
-    st.warning("Please upload a CSV file to see the configuration options.")
+    st.info("Please upload a CSV file to begin.")
 else:
-    # 2. SMART LOADING
+    # 2. LOAD DATA
+    # We read it once to find the header, then again to get the data
     df_raw = pd.read_csv(uploaded_file, header=None)
     
-    # Find the 'Particulars' header row
     header_row = 0
     for i in range(len(df_raw)):
         if "Particulars" in df_raw.iloc[i].values:
             header_row = i
             break
             
-    df = pd.read_csv(uploaded_file, skiprows=header_row).dropna(how='all', axis=1)
-    df.columns = [str(c).strip() for c in df.columns]
+    # Load the actual data
+    df = pd.read_csv(uploaded_file, skiprows=header_row)
+    
+    # 3. FIX COLUMN NAMES (This solves the .1, .2, .3 issue)
+    # This logic looks at the row ABOVE the headers to find the Month names
+    new_cols = []
+    current_month = "Opening"
+    
+    # We reload a small piece of the file to see the months (usually row 3 or 4)
+    df_months = pd.read_csv(uploaded_file, header=None, nrows=header_row)
+    month_row = df_months.iloc[header_row-2].fillna(method='ffill')
+    
+    for i, col in enumerate(df.columns):
+        m = str(month_row[i]) if i < len(month_row) else ""
+        if "nan" in m.lower() or "unnamed" in m.lower():
+            new_cols.append(col)
+        else:
+            new_cols.append(f"{m} - {col}")
 
-    # 3. SIDEBAR SELECTION (This will appear now!)
-    st.sidebar.header("STEP 2: Configure Columns")
+    df.columns = new_cols
     all_cols = df.columns.tolist()
+
+    # 4. SIDEBAR SELECTION
+    st.sidebar.header("STEP 2: Configure Columns")
     
-    ledger_col = st.sidebar.selectbox("Ledger Name Column", all_cols, index=0)
-    
-    # We try to auto-select Feb and Mar if they exist
-    month_1 = st.sidebar.selectbox("Select Base Month (e.g., Feb)", all_cols)
-    month_2 = st.sidebar.selectbox("Select Comparison Month (e.g., Mar)", all_cols)
+    ledger_col = st.sidebar.selectbox("Select Ledger Name Column", all_cols, index=0)
+    month_1 = st.sidebar.selectbox("Select Base Month (e.g., Feb Balance)", all_cols)
+    month_2 = st.sidebar.selectbox("Select Comparison Month (e.g., Mar Balance)", all_cols)
 
     st.sidebar.markdown("---")
-    generate_btn = st.sidebar.button("STEP 3: Generate Analysis")
-
-    if generate_btn:
-        # 4. CLEANING & MATH
+    if st.sidebar.button("STEP 3: Generate Analysis"):
+        # 5. CLEANING & MATH
         def clean_val(x):
             if pd.isna(x): return 0.0
             s = str(x).replace(' Dr', '').replace(' Cr', '').replace(',', '').strip()
@@ -47,20 +61,21 @@ else:
             except: return 0.0
 
         report_df = df[[ledger_col, month_1, month_2]].copy()
-        report_df.columns = ['Particulars', month_1, month_2]
+        report_df.columns = ['Particulars', 'Base_Month', 'Comparison_Month']
         
-        report_df[month_1] = report_df[month_1].apply(clean_val)
-        report_df[month_2] = report_df[month_2].apply(clean_val)
-        report_df['Variance'] = report_df[month_2] - report_df[month_1]
-        report_df['Change_%'] = (report_df['Variance'] / report_df[month_1].replace(0, 1))
+        report_df['Base_Month'] = report_df['Base_Month'].apply(clean_val)
+        report_df['Comparison_Month'] = report_df['Comparison_Month'].apply(clean_val)
+        report_df['Variance'] = report_df['Comparison_Month'] - report_df['Base_Month']
+        report_df['Change_%'] = (report_df['Variance'] / report_df['Base_Month'].replace(0, 1))
 
-        # 5. EXCEL EXPORT
+        # 6. EXCEL EXPORT
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             report_df.to_excel(writer, sheet_name='Variance', index=False)
             workbook  = writer.book
             worksheet = writer.sheets['Variance']
 
+            # Styles
             header_fmt = workbook.add_format({'bold': True, 'bg_color': '#D9EAD3', 'border': 1})
             num_fmt = workbook.add_format({'num_format': '#,##0.00', 'border': 1})
             pct_fmt = workbook.add_format({'num_format': '0.0%', 'border': 1})
@@ -74,13 +89,14 @@ else:
             for col_num, value in enumerate(report_df.columns.values):
                 worksheet.write(0, col_num, value, header_fmt)
 
+            # Highlighting
             worksheet.conditional_format(1, 3, len(report_df), 3, {'type': 'cell', 'criteria': '>', 'value': 0, 'format': red_fmt})
             worksheet.conditional_format(1, 3, len(report_df), 3, {'type': 'cell', 'criteria': '<', 'value': 0, 'format': grn_fmt})
 
-        st.success(f"Successfully analyzed {month_1} vs {month_2}!")
+        st.success("Analysis Complete!")
         st.download_button(
             label="📥 Download Professional Excel Report",
             data=output.getvalue(),
-            file_name=f"Variance_Analysis_{month_2}.xlsx",
+            file_name=f"MIS_Variance_Report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
